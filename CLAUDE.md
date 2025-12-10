@@ -6,6 +6,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Foundry smart contract submodule for the PhusdStableMinter contract.
 
+### Project Purpose
+
+**PhusdStableMinter** is a one-way minting contract that:
+- Accepts various stablecoins from users (USDC, DAI, USDT, etc.)
+- Mints phUSD (Phoenix USD) tokens at a configurable exchange rate
+- Deposits the received stablecoins into registered yield strategies via the vault-RM IYieldStrategy interface
+- Does NOT support redemption - this is a one-way mint only
+
+### Architecture Overview
+
+The contract acts as a bridge between users and yield-generating strategies:
+
+```
+User → PhusdStableMinter → IYieldStrategy → ERC4626 Vault
+     (deposit stablecoin)  (mint phUSD)     (earn yield)
+```
+
+**Key Components:**
+
+1. **StablecoinConfig Mapping**: Maps each supported stablecoin to:
+   - The IYieldStrategy address that will receive deposits
+   - Exchange rate (e.g., 1:1 = 1e18, 0.95:1 = 95e16)
+   - Decimal count for proper normalization
+
+2. **Decimal Normalization**: Handles different decimal counts across stablecoins:
+   - phUSD has 18 decimals (standard ERC20)
+   - USDC/USDT have 6 decimals
+   - DAI has 18 decimals
+   - Formula: `phUSDAmount = (inputAmount * exchangeRate * 10^(18 - inputDecimals)) / 1e18`
+
+3. **Yield Strategy Integration**: Uses vault-RM's IYieldStrategy interface:
+   - `deposit(token, amount, recipient)` - Deposits stablecoins, minter is recipient
+   - `totalBalanceOf(token, account)` - Queries balance for withdrawals
+   - `withdraw(token, amount, recipient)` - Withdraws to specified recipient
+
+4. **Owner Functions**:
+   - Register/update stablecoin configurations
+   - Seed yield strategies without minting (no-mint deposits)
+   - Approve tokens for yield strategies
+   - Withdraw from yield strategies for migrations
+
+### Important Constraints
+
+- **Authorization Required**: The yield strategy must have the minter registered as an authorized client via `setClient()`
+- **Minting Permission**: The phUSD token must grant minting permission to this contract
+- **One-Way Only**: Users cannot redeem phUSD back to stablecoins through this contract
+- **Owner-Controlled Rates**: Only owner can set/update exchange rates (no oracle integration needed for stablecoin-to-stablecoin)
+
 ## Dependency Management
 
 ### Types of Dependencies
