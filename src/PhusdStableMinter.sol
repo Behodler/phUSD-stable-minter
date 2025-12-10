@@ -2,7 +2,15 @@
 pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../lib/mutable/vault/src/interfaces/IYieldStrategy.sol";
+
+/**
+ * @notice Interface for mintable phUSD token
+ */
+interface IMintableToken {
+    function mint(address to, uint256 amount) external;
+}
 
 contract PhusdStableMinter is Ownable {
     // Immutable phUSD token address
@@ -17,6 +25,9 @@ contract PhusdStableMinter is Ownable {
 
     // Mapping of stablecoin address to its configuration
     mapping(address => StablecoinConfig) public stablecoinConfigs;
+
+    // Reverse mapping for withdraw lookup: yieldStrategy => stablecoin token
+    mapping(address => address) public yieldStrategyToToken;
 
     constructor(address _phUSD) Ownable(msg.sender) {
         phUSD = _phUSD;
@@ -37,7 +48,17 @@ contract PhusdStableMinter is Ownable {
         uint256 exchangeRate,
         uint8 decimals
     ) external onlyOwner {
-        revert("not implemented");
+        require(stablecoin != address(0), "Zero address stablecoin");
+        require(yieldStrategy != address(0), "Zero address yield strategy");
+
+        stablecoinConfigs[stablecoin] = StablecoinConfig({
+            yieldStrategy: yieldStrategy,
+            exchangeRate: exchangeRate,
+            decimals: decimals
+        });
+
+        // Populate reverse mapping for withdraw lookup
+        yieldStrategyToToken[yieldStrategy] = stablecoin;
     }
 
     /**
@@ -46,7 +67,8 @@ contract PhusdStableMinter is Ownable {
      * @param newRate The new exchange rate (1e18 = 1:1 ratio)
      */
     function updateExchangeRate(address stablecoin, uint256 newRate) external onlyOwner {
-        revert("not implemented");
+        require(stablecoinConfigs[stablecoin].yieldStrategy != address(0), "Stablecoin not registered");
+        stablecoinConfigs[stablecoin].exchangeRate = newRate;
     }
 
     /**
@@ -59,7 +81,11 @@ contract PhusdStableMinter is Ownable {
         external
         onlyOwner
     {
-        revert("not implemented");
+        // Transfer tokens from caller to this contract
+        IERC20(inputToken).transferFrom(msg.sender, address(this), amount);
+
+        // Deposit to yield strategy, minter is the recipient
+        IYieldStrategy(yieldStrategy).deposit(inputToken, amount, address(this));
     }
 
     /**
@@ -68,7 +94,7 @@ contract PhusdStableMinter is Ownable {
      * @param yieldStrategy The yield strategy to approve for
      */
     function approveYS(address token, address yieldStrategy) external onlyOwner {
-        revert("not implemented");
+        IERC20(token).approve(yieldStrategy, type(uint256).max);
     }
 
     /**
@@ -77,7 +103,14 @@ contract PhusdStableMinter is Ownable {
      * @param recipient The address to receive the withdrawn tokens
      */
     function withdraw(address yieldStrategy, address recipient) external onlyOwner {
-        revert("not implemented");
+        // Look up the token using reverse mapping
+        address token = yieldStrategyToToken[yieldStrategy];
+
+        // Query the full balance from yield strategy
+        uint256 balance = IYieldStrategy(yieldStrategy).totalBalanceOf(token, address(this));
+
+        // Withdraw the full balance to the specified recipient
+        IYieldStrategy(yieldStrategy).withdraw(token, balance, recipient);
     }
 
     // ========== USER FUNCTIONS ==========
@@ -88,7 +121,22 @@ contract PhusdStableMinter is Ownable {
      * @param amount The amount of stablecoin to deposit
      */
     function mint(address stablecoin, uint256 amount) external {
-        revert("not implemented");
+        require(amount > 0, "Amount must be greater than zero");
+
+        StablecoinConfig memory config = stablecoinConfigs[stablecoin];
+        require(config.yieldStrategy != address(0), "Stablecoin not registered");
+
+        // Transfer stablecoin from caller to this contract
+        IERC20(stablecoin).transferFrom(msg.sender, address(this), amount);
+
+        // Deposit to yield strategy, minter is the recipient
+        IYieldStrategy(config.yieldStrategy).deposit(stablecoin, amount, address(this));
+
+        // Calculate phUSD amount using decimal normalization formula
+        uint256 phUSDAmount = calculateMintAmount(stablecoin, amount);
+
+        // Mint phUSD to caller
+        IMintableToken(phUSD).mint(msg.sender, phUSDAmount);
     }
 
     /**
@@ -98,11 +146,16 @@ contract PhusdStableMinter is Ownable {
      * @return The amount of phUSD that will be minted
      */
     function calculateMintAmount(address stablecoin, uint256 inputAmount)
-        external
+        public
         view
         returns (uint256)
     {
-        return 0;
+        StablecoinConfig memory config = stablecoinConfigs[stablecoin];
+
+        // Decimal normalization formula:
+        // phUSDAmount = (inputAmount * exchangeRate * 10^(18 - inputDecimals)) / 1e18
+        uint256 decimalAdjustment = 10 ** (18 - config.decimals);
+        return (inputAmount * config.exchangeRate * decimalAdjustment) / 1e18;
     }
 
     // ========== VIEW FUNCTIONS ==========

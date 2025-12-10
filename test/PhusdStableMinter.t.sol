@@ -138,6 +138,9 @@ contract PhusdStableMinterTest is Test {
         dai.mint(user1, 1000000e18); // 1M DAI
         usdc.mint(user2, 1000000e6);
         dai.mint(user2, 1000000e18);
+        // Mint tokens to owner for testing owner functions
+        usdc.mint(owner, 1000000e6);
+        dai.mint(owner, 1000000e18);
     }
 
     // ========== REGISTRATION TESTS ==========
