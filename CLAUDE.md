@@ -141,6 +141,101 @@ When a feature requires changes to a mutable dependency:
 - `forge fmt` - Format Solidity code
 - `forge snapshot` - Generate gas snapshots
 
+## Integration Notes for Deployment
+
+When writing deployment scripts or integration code for PhusdStableMinter, the following constraints **MUST** be satisfied in the correct order.
+
+### Pre-Deployment Requirements
+
+1. **phUSD Token Must Exist**: Deploy or reference an existing mintable ERC20 token that implements the `IMintableToken` interface (specifically the `mint(address to, uint256 amount)` function).
+
+2. **YieldStrategy Contracts Must Exist**: Each stablecoin you want to support requires a deployed IYieldStrategy-compatible contract.
+
+### Post-Deployment Setup (Order Matters!)
+
+Execute these steps in the specified order to avoid transaction reverts:
+
+#### Step 1: Grant Minting Permission to PhusdStableMinter
+The phUSD token is an implementation of the Flax token (see `lib/mutable/flax-token/src/interfaces/IFlax.sol`). The owner must authorize the minter using `setMinter()`:
+
+```solidity
+// phUSD owner must execute this
+IFlax(phUSD).setMinter(address(phusdStableMinter), true);
+```
+
+**Note**: Flax uses a version-based minting system. If `revokeAllMintPrivileges()` is ever called on the phUSD token, the minter will need to be re-authorized.
+
+#### Step 2: Authorize PhusdStableMinter as Client on Each YieldStrategy
+The YieldStrategy owner must call `setClient()` to authorize the minter. **Without this, all deposit/withdraw calls will revert.**
+
+```solidity
+// YieldStrategy owner must execute this
+yieldStrategy.setClient(address(phusdStableMinter), true);
+```
+
+#### Step 3: Register Stablecoins with Their YieldStrategies
+Call `registerStablecoin()` to map each stablecoin to its yield strategy:
+
+```solidity
+phusdStableMinter.registerStablecoin(
+    usdcAddress,           // stablecoin
+    usdcYieldStrategy,     // yield strategy for USDC
+    1e18,                  // exchange rate (1:1)
+    6                      // USDC decimals
+);
+```
+
+#### Step 4: Approve YieldStrategies for Token Transfers
+**CRITICAL**: Before calling `mint()` or `noMintDeposit()`, the minter must approve each yield strategy to spend the corresponding stablecoin. Call `approveYS()`:
+
+```solidity
+// Must be called before any deposits can occur
+phusdStableMinter.approveYS(usdcAddress, usdcYieldStrategy);
+```
+
+### Common Integration Pitfalls
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `mint()` reverts with no error | YieldStrategy not authorized | Call `yieldStrategy.setClient(minter, true)` |
+| `mint()` reverts on transfer | Missing token approval | Call `approveYS(token, yieldStrategy)` |
+| `mint()` reverts "Stablecoin not registered" | Missing registration | Call `registerStablecoin()` first |
+| phUSD not received | Minter lacks mint permission | Call `IFlax(phUSD).setMinter(minter, true)` |
+| `noMintDeposit()` reverts | Missing approval OR not authorized | Call both `approveYS()` and `setClient()` |
+| `withdraw()` returns 0 | Token not in reverse mapping | Stablecoin must be registered via `registerStablecoin()` |
+
+### Deployment Script Checklist
+
+```
+□ Deploy phUSD token (or use existing)
+□ Deploy YieldStrategy contracts (or use existing)
+□ Deploy PhusdStableMinter with phUSD address
+□ Grant minting permission: IFlax(phUSD).setMinter(minter, true)
+□ For each stablecoin:
+    □ Authorize minter: yieldStrategy.setClient(minter, true)
+    □ Register: minter.registerStablecoin(token, ys, rate, decimals)
+    □ Approve: minter.approveYS(token, yieldStrategy)
+□ Test mint() with small amount before announcing
+```
+
+### Multi-Sig / Governance Considerations
+
+In production deployments where contracts are owned by multi-sigs or DAOs:
+
+- **phUSD minting permission** requires governance proposal
+- **YieldStrategy.setClient()** requires YieldStrategy owner action
+- **registerStablecoin()** and **approveYS()** require PhusdStableMinter owner action
+
+Coordinate with all relevant owners before deployment. The minter will not function until ALL authorizations are in place.
+
+### Exchange Rate Guidelines
+
+- `1e18` = 1:1 ratio (1 stablecoin → 1 phUSD)
+- `95e16` = 0.95:1 ratio (1 stablecoin → 0.95 phUSD, a 5% discount)
+- `105e16` = 1.05:1 ratio (1 stablecoin → 1.05 phUSD, a 5% premium)
+
+Use rates below 1:1 for less-trusted stablecoins (e.g., algorithmic) and equal/above for high-quality collateral.
+
 ## Important Reminders
 
 - This submodule operates independently from sibling submodules
