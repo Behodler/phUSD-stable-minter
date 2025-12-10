@@ -154,6 +154,8 @@ contract PhusdStableMinter is Ownable {
 
         // Decimal normalization formula:
         // phUSDAmount = (inputAmount * exchangeRate * 10^(18 - inputDecimals)) / 1e18
+        //Note to auditors: we're assuming that there is no stablecoin with more decimals than 18. Currently this is reasonable. 
+        //if this changes, it's possible to migrate to a new minter without much trouble so the consequence of being wrong here is not catastrophic
         uint256 decimalAdjustment = 10 ** (18 - config.decimals);
         return (inputAmount * config.exchangeRate * decimalAdjustment) / 1e18;
     }
