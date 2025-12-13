@@ -3,6 +3,8 @@ pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../lib/mutable/vault/src/interfaces/IYieldStrategy.sol";
 
 /**
@@ -12,7 +14,9 @@ interface IMintableToken {
     function mint(address to, uint256 amount) external;
 }
 
-contract PhusdStableMinter is Ownable {
+contract PhusdStableMinter is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     // Immutable phUSD token address
     address public immutable phUSD;
 
@@ -28,6 +32,29 @@ contract PhusdStableMinter is Ownable {
 
     // Reverse mapping for withdraw lookup: yieldStrategy => stablecoin token
     mapping(address => address) public yieldStrategyToToken;
+
+    // Events
+    event StablecoinRegistered(
+        address indexed stablecoin,
+        address indexed yieldStrategy,
+        uint256 exchangeRate,
+        uint8 decimals
+    );
+    event ExchangeRateUpdated(address indexed stablecoin, uint256 oldRate, uint256 newRate);
+    event PhUSDMinted(
+        address indexed user,
+        address indexed stablecoin,
+        uint256 stablecoinAmount,
+        uint256 phUSDAmount
+    );
+    event TokensDeposited(address indexed yieldStrategy, address indexed token, uint256 amount);
+    event WithdrawalExecuted(
+        address indexed yieldStrategy,
+        address indexed token,
+        uint256 amount,
+        address indexed recipient
+    );
+    event ApprovalSet(address indexed token, address indexed yieldStrategy);
 
     constructor(address _phUSD) Ownable(msg.sender) {
         phUSD = _phUSD;
@@ -59,6 +86,8 @@ contract PhusdStableMinter is Ownable {
 
         // Populate reverse mapping for withdraw lookup
         yieldStrategyToToken[yieldStrategy] = stablecoin;
+
+        emit StablecoinRegistered(stablecoin, yieldStrategy, exchangeRate, decimals);
     }
 
     /**
@@ -68,7 +97,9 @@ contract PhusdStableMinter is Ownable {
      */
     function updateExchangeRate(address stablecoin, uint256 newRate) external onlyOwner {
         require(stablecoinConfigs[stablecoin].yieldStrategy != address(0), "Stablecoin not registered");
+        uint256 oldRate = stablecoinConfigs[stablecoin].exchangeRate;
         stablecoinConfigs[stablecoin].exchangeRate = newRate;
+        emit ExchangeRateUpdated(stablecoin, oldRate, newRate);
     }
 
     /**
@@ -82,10 +113,12 @@ contract PhusdStableMinter is Ownable {
         onlyOwner
     {
         // Transfer tokens from caller to this contract
-        IERC20(inputToken).transferFrom(msg.sender, address(this), amount);
+        IERC20(inputToken).safeTransferFrom(msg.sender, address(this), amount);
 
         // Deposit to yield strategy, minter is the recipient
         IYieldStrategy(yieldStrategy).deposit(inputToken, amount, address(this));
+
+        emit TokensDeposited(yieldStrategy, inputToken, amount);
     }
 
     /**
@@ -94,7 +127,8 @@ contract PhusdStableMinter is Ownable {
      * @param yieldStrategy The yield strategy to approve for
      */
     function approveYS(address token, address yieldStrategy) external onlyOwner {
-        IERC20(token).approve(yieldStrategy, type(uint256).max);
+        IERC20(token).forceApprove(yieldStrategy, type(uint256).max);
+        emit ApprovalSet(token, yieldStrategy);
     }
 
     /**
@@ -111,6 +145,8 @@ contract PhusdStableMinter is Ownable {
 
         // Withdraw the full balance to the specified recipient
         IYieldStrategy(yieldStrategy).withdraw(token, balance, recipient);
+
+        emit WithdrawalExecuted(yieldStrategy, token, balance, recipient);
     }
 
     // ========== USER FUNCTIONS ==========
@@ -120,14 +156,14 @@ contract PhusdStableMinter is Ownable {
      * @param stablecoin The stablecoin to deposit
      * @param amount The amount of stablecoin to deposit
      */
-    function mint(address stablecoin, uint256 amount) external {
+    function mint(address stablecoin, uint256 amount) external nonReentrant {
         require(amount > 0, "Amount must be greater than zero");
 
         StablecoinConfig memory config = stablecoinConfigs[stablecoin];
         require(config.yieldStrategy != address(0), "Stablecoin not registered");
 
         // Transfer stablecoin from caller to this contract
-        IERC20(stablecoin).transferFrom(msg.sender, address(this), amount);
+        IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), amount);
 
         // Deposit to yield strategy, minter is the recipient
         IYieldStrategy(config.yieldStrategy).deposit(stablecoin, amount, address(this));
@@ -137,6 +173,8 @@ contract PhusdStableMinter is Ownable {
 
         // Mint phUSD to caller
         IMintableToken(phUSD).mint(msg.sender, phUSDAmount);
+
+        emit PhUSDMinted(msg.sender, stablecoin, amount, phUSDAmount);
     }
 
     /**

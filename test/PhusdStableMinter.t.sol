@@ -456,4 +456,89 @@ contract PhusdStableMinterTest is Test {
         vm.expectRevert();
         minter.withdraw(address(yieldStrategy), user2);
     }
+
+    // ========== EVENT EMISSION TESTS ==========
+
+    function test_registerStablecoin_EmitsStablecoinRegisteredEvent() public {
+        vm.expectEmit(true, true, false, true);
+        emit StablecoinRegistered(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+    }
+
+    function test_updateExchangeRate_EmitsExchangeRateUpdatedEvent() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+
+        vm.expectEmit(true, false, false, true);
+        emit ExchangeRateUpdated(address(usdc), EXCHANGE_RATE_1_TO_1, EXCHANGE_RATE_095);
+        minter.updateExchangeRate(address(usdc), EXCHANGE_RATE_095);
+    }
+
+    function test_mint_EmitsPhUSDMintedEvent() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+
+        uint256 mintAmount = 1000e6;
+        uint256 expectedPhUSD = 1000e18;
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), mintAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit PhUSDMinted(user1, address(usdc), mintAmount, expectedPhUSD);
+        minter.mint(address(usdc), mintAmount);
+        vm.stopPrank();
+    }
+
+    function test_noMintDeposit_EmitsTokensDepositedEvent() public {
+        minter.approveYS(address(usdc), address(yieldStrategy));
+
+        uint256 depositAmount = 1000e6;
+        usdc.approve(address(minter), depositAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit TokensDeposited(address(yieldStrategy), address(usdc), depositAmount);
+        minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
+    }
+
+    function test_withdraw_EmitsWithdrawalExecutedEvent() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+
+        uint256 depositAmount = 1000e6;
+        usdc.approve(address(minter), depositAmount);
+        minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
+
+        vm.expectEmit(true, true, false, true);
+        emit WithdrawalExecuted(address(yieldStrategy), address(usdc), depositAmount, user2);
+        minter.withdraw(address(yieldStrategy), user2);
+    }
+
+    function test_approveYS_EmitsApprovalSetEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit ApprovalSet(address(usdc), address(yieldStrategy));
+        minter.approveYS(address(usdc), address(yieldStrategy));
+    }
+
+    // Events declarations for testing
+    event StablecoinRegistered(
+        address indexed stablecoin,
+        address indexed yieldStrategy,
+        uint256 exchangeRate,
+        uint8 decimals
+    );
+    event ExchangeRateUpdated(address indexed stablecoin, uint256 oldRate, uint256 newRate);
+    event PhUSDMinted(
+        address indexed user,
+        address indexed stablecoin,
+        uint256 stablecoinAmount,
+        uint256 phUSDAmount
+    );
+    event TokensDeposited(address indexed yieldStrategy, address indexed token, uint256 amount);
+    event WithdrawalExecuted(
+        address indexed yieldStrategy,
+        address indexed token,
+        uint256 amount,
+        address indexed recipient
+    );
+    event ApprovalSet(address indexed token, address indexed yieldStrategy);
 }
