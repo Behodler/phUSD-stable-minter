@@ -25,6 +25,7 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
         address yieldStrategy;
         uint256 exchangeRate; // 1e18 = 1:1 ratio
         uint8 decimals;
+        bool enabled;
     }
 
     // Mapping of stablecoin address to its configuration
@@ -32,6 +33,9 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
 
     // Reverse mapping for withdraw lookup: yieldStrategy => stablecoin token
     mapping(address => address) public yieldStrategyToToken;
+
+    // Events
+    event StablecoinEnabledChanged(address indexed stablecoin, bool enabled);
 
     // Events
     event StablecoinRegistered(
@@ -81,7 +85,8 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
         stablecoinConfigs[stablecoin] = StablecoinConfig({
             yieldStrategy: yieldStrategy,
             exchangeRate: exchangeRate,
-            decimals: decimals
+            decimals: decimals,
+            enabled: true
         });
 
         // Populate reverse mapping for withdraw lookup
@@ -100,6 +105,17 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
         uint256 oldRate = stablecoinConfigs[stablecoin].exchangeRate;
         stablecoinConfigs[stablecoin].exchangeRate = newRate;
         emit ExchangeRateUpdated(stablecoin, oldRate, newRate);
+    }
+
+    /**
+     * @notice Enable or disable minting for a specific stablecoin
+     * @param stablecoin The stablecoin token address
+     * @param _enabled True to enable minting, false to disable
+     */
+    function setStablecoinEnabled(address stablecoin, bool _enabled) external onlyOwner {
+        require(stablecoinConfigs[stablecoin].yieldStrategy != address(0), "Stablecoin not registered");
+        stablecoinConfigs[stablecoin].enabled = _enabled;
+        emit StablecoinEnabledChanged(stablecoin, _enabled);
     }
 
     /**
@@ -161,6 +177,7 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
 
         StablecoinConfig memory config = stablecoinConfigs[stablecoin];
         require(config.yieldStrategy != address(0), "Stablecoin not registered");
+        require(config.enabled, "Stablecoin minting is paused");
 
         // Transfer stablecoin from caller to this contract
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), amount);

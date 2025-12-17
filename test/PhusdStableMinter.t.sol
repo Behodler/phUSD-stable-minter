@@ -154,6 +154,13 @@ contract PhusdStableMinterTest is Test {
         assertEq(config.decimals, 6, "Decimals mismatch");
     }
 
+    function test_registerStablecoin_EnabledByDefault() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertTrue(config.enabled, "Stablecoin should be enabled by default");
+    }
+
     function test_registerStablecoin_RevertsForZeroAddressStablecoin() public {
         vm.expectRevert();
         minter.registerStablecoin(address(0), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 18);
@@ -192,6 +199,78 @@ contract PhusdStableMinterTest is Test {
         vm.prank(user1);
         vm.expectRevert();
         minter.updateExchangeRate(address(usdc), EXCHANGE_RATE_095);
+    }
+
+    // ========== ENABLED FLAG TESTS ==========
+
+    function test_setStablecoinEnabled_DisablesStablecoin() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+
+        minter.setStablecoinEnabled(address(usdc), false);
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertFalse(config.enabled, "Stablecoin should be disabled");
+    }
+
+    function test_setStablecoinEnabled_EnablesStablecoin() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.setStablecoinEnabled(address(usdc), false);
+
+        minter.setStablecoinEnabled(address(usdc), true);
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertTrue(config.enabled, "Stablecoin should be enabled");
+    }
+
+    function test_setStablecoinEnabled_EmitsEvent() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+
+        vm.expectEmit(true, false, false, true);
+        emit PhusdStableMinter.StablecoinEnabledChanged(address(usdc), false);
+        minter.setStablecoinEnabled(address(usdc), false);
+    }
+
+    function test_setStablecoinEnabled_OnlyCallableByOwner() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+
+        vm.prank(user1);
+        vm.expectRevert();
+        minter.setStablecoinEnabled(address(usdc), false);
+    }
+
+    function test_setStablecoinEnabled_RevertsForUnregisteredStablecoin() public {
+        vm.expectRevert();
+        minter.setStablecoinEnabled(address(usdc), false);
+    }
+
+    function test_mint_RevertsWhenStablecoinDisabled() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+        minter.setStablecoinEnabled(address(usdc), false);
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 1000e6);
+        vm.expectRevert();
+        minter.mint(address(usdc), 1000e6);
+        vm.stopPrank();
+    }
+
+    function test_mint_WorksWhenStablecoinReEnabled() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+        minter.setStablecoinEnabled(address(usdc), false);
+        minter.setStablecoinEnabled(address(usdc), true);
+
+        uint256 mintAmount = 1000e6;
+        uint256 expectedPhUSD = 1000e18;
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), mintAmount);
+        minter.mint(address(usdc), mintAmount);
+        vm.stopPrank();
+
+        uint256 phUSDBalance = phUSD.balanceOf(user1);
+        assertEq(phUSDBalance, expectedPhUSD, "Minting should work after re-enabling");
     }
 
     // ========== MINT TESTS ==========
