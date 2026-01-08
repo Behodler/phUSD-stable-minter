@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../lib/mutable/vault/src/interfaces/IYieldStrategy.sol";
+import "../lib/mutable/pauser/src/interfaces/IPausable.sol";
 
 /**
  * @notice Interface for mintable phUSD token
@@ -14,7 +15,7 @@ interface IMintableToken {
     function mint(address to, uint256 amount) external;
 }
 
-contract PhusdStableMinter is Ownable, ReentrancyGuard {
+contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
     using SafeERC20 for IERC20;
 
     // Immutable phUSD token address
@@ -34,7 +35,14 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
     // Reverse mapping for withdraw lookup: yieldStrategy => stablecoin token
     mapping(address => address) public yieldStrategyToToken;
 
+    // Pauser state (IPausable implementation)
+    address public pauser;
+    bool public paused;
+
     // Events
+    event PauserChanged(address indexed previousPauser, address indexed newPauser);
+    event Paused(address account);
+    event Unpaused(address account);
     event StablecoinEnabledChanged(address indexed stablecoin, bool enabled);
 
     // Events
@@ -62,6 +70,38 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
 
     constructor(address _phUSD) Ownable(msg.sender) {
         phUSD = _phUSD;
+    }
+
+    // ========== PAUSER FUNCTIONS (IPausable) ==========
+
+    /**
+     * @notice Set the pauser address
+     * @param newPauser The address authorized to pause/unpause the contract
+     */
+    function setPauser(address newPauser) external onlyOwner {
+        address oldPauser = pauser;
+        pauser = newPauser;
+        emit PauserChanged(oldPauser, newPauser);
+    }
+
+    /**
+     * @notice Pause the contract
+     * @dev Only callable by the authorized pauser
+     */
+    function pause() external {
+        require(msg.sender == pauser, "Only pauser");
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /**
+     * @notice Unpause the contract
+     * @dev Only callable by the authorized pauser
+     */
+    function unpause() external {
+        require(msg.sender == pauser, "Only pauser");
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 
     // ========== OWNER FUNCTIONS ==========
@@ -173,6 +213,7 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard {
      * @param amount The amount of stablecoin to deposit
      */
     function mint(address stablecoin, uint256 amount) external nonReentrant {
+        require(!paused, "Contract is paused");
         require(amount > 0, "Amount must be greater than zero");
 
         StablecoinConfig memory config = stablecoinConfigs[stablecoin];

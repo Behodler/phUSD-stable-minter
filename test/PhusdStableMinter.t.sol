@@ -620,4 +620,156 @@ contract PhusdStableMinterTest is Test {
         address indexed recipient
     );
     event ApprovalSet(address indexed token, address indexed yieldStrategy);
+
+    // ========== IPAUSABLE TESTS ==========
+
+    function test_pauser_ReturnsZeroAddressByDefault() public view {
+        assertEq(minter.pauser(), address(0), "Pauser should be zero by default");
+    }
+
+    function test_setPauser_SetsPauserAddress() public {
+        address newPauser = address(0x999);
+        minter.setPauser(newPauser);
+        assertEq(minter.pauser(), newPauser, "Pauser not set correctly");
+    }
+
+    function test_setPauser_OnlyCallableByOwner() public {
+        vm.prank(user1);
+        vm.expectRevert();
+        minter.setPauser(user1);
+    }
+
+    function test_setPauser_EmitsPauserChangedEvent() public {
+        address newPauser = address(0x999);
+        vm.expectEmit(true, true, false, false);
+        emit PauserChanged(address(0), newPauser);
+        minter.setPauser(newPauser);
+    }
+
+    function test_pause_SetsPausedToTrue() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.prank(pauserAddr);
+        minter.pause();
+
+        assertTrue(minter.paused(), "Contract should be paused");
+    }
+
+    function test_pause_OnlyCallableByPauser() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        // Owner cannot pause
+        vm.expectRevert();
+        minter.pause();
+
+        // Random user cannot pause
+        vm.prank(user1);
+        vm.expectRevert();
+        minter.pause();
+    }
+
+    function test_pause_EmitsPausedEvent() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.prank(pauserAddr);
+        vm.expectEmit(true, false, false, false);
+        emit Paused(pauserAddr);
+        minter.pause();
+    }
+
+    function test_unpause_SetsPausedToFalse() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.startPrank(pauserAddr);
+        minter.pause();
+        assertTrue(minter.paused(), "Contract should be paused");
+
+        minter.unpause();
+        assertFalse(minter.paused(), "Contract should be unpaused");
+        vm.stopPrank();
+    }
+
+    function test_unpause_OnlyCallableByPauser() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.prank(pauserAddr);
+        minter.pause();
+
+        // Owner cannot unpause
+        vm.expectRevert();
+        minter.unpause();
+
+        // Random user cannot unpause
+        vm.prank(user1);
+        vm.expectRevert();
+        minter.unpause();
+    }
+
+    function test_unpause_EmitsUnpausedEvent() public {
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.startPrank(pauserAddr);
+        minter.pause();
+
+        vm.expectEmit(true, false, false, false);
+        emit Unpaused(pauserAddr);
+        minter.unpause();
+        vm.stopPrank();
+    }
+
+    function test_mint_RevertsWhenContractPaused() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.prank(pauserAddr);
+        minter.pause();
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 1000e6);
+        vm.expectRevert();
+        minter.mint(address(usdc), 1000e6);
+        vm.stopPrank();
+    }
+
+    function test_mint_WorksAfterUnpause() public {
+        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
+        minter.approveYS(address(usdc), address(yieldStrategy));
+
+        address pauserAddr = address(0x999);
+        minter.setPauser(pauserAddr);
+
+        vm.prank(pauserAddr);
+        minter.pause();
+
+        vm.prank(pauserAddr);
+        minter.unpause();
+
+        uint256 mintAmount = 1000e6;
+        uint256 expectedPhUSD = 1000e18;
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), mintAmount);
+        minter.mint(address(usdc), mintAmount);
+        vm.stopPrank();
+
+        assertEq(phUSD.balanceOf(user1), expectedPhUSD, "Minting should work after unpause");
+    }
+
+    function test_paused_ReturnsFalseByDefault() public view {
+        assertFalse(minter.paused(), "Contract should not be paused by default");
+    }
+
+    // Additional pause event declarations
+    event PauserChanged(address indexed previousPauser, address indexed newPauser);
+    event Paused(address account);
+    event Unpaused(address account);
 }
