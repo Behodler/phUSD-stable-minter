@@ -5,8 +5,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "../lib/mutable/vault/src/interfaces/IYieldStrategy.sol";
-import "../lib/mutable/pauser/src/interfaces/IPausable.sol";
+import "../lib/vault/src/interfaces/IYieldStrategy.sol";
+import "../lib/pauser/src/interfaces/IPausable.sol";
 
 /**
  * @notice Interface for mintable phUSD token

@@ -3,7 +3,7 @@ pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
 import "../src/PhusdStableMinter.sol";
-import "../lib/mutable/vault/src/interfaces/IYieldStrategy.sol";
+import "../lib/vault/src/interfaces/IYieldStrategy.sol";
 
 // Mock ERC20 for testing
 contract MockERC20 {
@@ -95,7 +95,8 @@ contract MockYieldStrategy is IYieldStrategy {
 
     function emergencyWithdraw(uint256) external {}
     function totalWithdrawal(address, address) external {}
-    function withdrawFrom(address, address, uint256, address) external {}
+    function skimSurplus(address, address, uint256, address) external {}
+    function skimSurplusBatch(address, address[] calldata, address) external {}
 }
 
 contract PhusdStableMinterTest is Test {
