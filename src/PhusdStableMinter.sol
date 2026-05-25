@@ -27,13 +27,13 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
         uint256 exchangeRate; // 1e18 = 1:1 ratio
         uint8 decimals;
         bool enabled;
+        uint256 maxMintPerDay;     // owner-set cap in phUSD (18 decimals); 0 = no limit
+        uint256 mintedToday;       // phUSD minted in the current 24h window (internal)
+        uint256 lastMintTimestamp; // start of the current 24h window (internal)
     }
 
     // Mapping of stablecoin address to its configuration
     mapping(address => StablecoinConfig) public stablecoinConfigs;
-
-    // Reverse mapping for withdraw lookup: yieldStrategy => stablecoin token
-    mapping(address => address) public yieldStrategyToToken;
 
     // Pauser state (IPausable implementation)
     address public pauser;
@@ -60,13 +60,8 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
         uint256 phUSDAmount
     );
     event TokensDeposited(address indexed yieldStrategy, address indexed token, uint256 amount);
-    event WithdrawalExecuted(
-        address indexed yieldStrategy,
-        address indexed token,
-        uint256 amount,
-        address indexed recipient
-    );
     event ApprovalSet(address indexed token, address indexed yieldStrategy);
+    event MaxMintPerDayUpdated(address indexed stablecoin, uint256 newMaxMintPerDay);
 
     constructor(address _phUSD) Ownable(msg.sender) {
         phUSD = _phUSD;
@@ -126,11 +121,11 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
             yieldStrategy: yieldStrategy,
             exchangeRate: exchangeRate,
             decimals: decimals,
-            enabled: true
+            enabled: true,
+            maxMintPerDay: 0,
+            mintedToday: 0,
+            lastMintTimestamp: 0
         });
-
-        // Populate reverse mapping for withdraw lookup
-        yieldStrategyToToken[yieldStrategy] = stablecoin;
 
         emit StablecoinRegistered(stablecoin, yieldStrategy, exchangeRate, decimals);
     }
@@ -188,21 +183,14 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
     }
 
     /**
-     * @notice Withdraw all tokens from a yield strategy (for migration)
-     * @param yieldStrategy The yield strategy to withdraw from
-     * @param recipient The address to receive the withdrawn tokens
+     * @notice Set the rolling 24h mint cap for a registered stablecoin
+     * @param stablecoin The stablecoin token address
+     * @param newMaxMintPerDay The cap in phUSD (18 decimals); 0 disables the limit
      */
-    function withdraw(address yieldStrategy, address recipient) external onlyOwner {
-        // Look up the token using reverse mapping
-        address token = yieldStrategyToToken[yieldStrategy];
-
-        // Query the full balance from yield strategy
-        uint256 balance = IYieldStrategy(yieldStrategy).totalBalanceOf(token, address(this));
-
-        // Withdraw the full balance to the specified recipient
-        IYieldStrategy(yieldStrategy).withdraw(token, balance, recipient);
-
-        emit WithdrawalExecuted(yieldStrategy, token, balance, recipient);
+    function setMaxMintPerDay(address stablecoin, uint256 newMaxMintPerDay) external onlyOwner {
+        require(stablecoinConfigs[stablecoin].yieldStrategy != address(0), "Stablecoin not registered");
+        stablecoinConfigs[stablecoin].maxMintPerDay = newMaxMintPerDay;
+        emit MaxMintPerDayUpdated(stablecoin, newMaxMintPerDay);
     }
 
     // ========== USER FUNCTIONS ==========
@@ -216,18 +204,29 @@ contract PhusdStableMinter is Ownable, ReentrancyGuard, IPausable {
         require(!paused, "Contract is paused");
         require(amount > 0, "Amount must be greater than zero");
 
-        StablecoinConfig memory config = stablecoinConfigs[stablecoin];
+        StablecoinConfig storage config = stablecoinConfigs[stablecoin];
         require(config.yieldStrategy != address(0), "Stablecoin not registered");
         require(config.enabled, "Stablecoin minting is paused");
+
+        // Calculate phUSD amount using decimal normalization formula
+        uint256 phUSDAmount = calculateMintAmount(stablecoin, amount);
+
+        // Rolling 24h mint cap (disabled when maxMintPerDay == 0)
+        if (config.maxMintPerDay > 0) {
+            if (block.timestamp >= config.lastMintTimestamp + 1 days) {
+                // Window elapsed (or first mint: lastMintTimestamp == 0) -> start a new window
+                config.mintedToday = 0;
+                config.lastMintTimestamp = block.timestamp;
+            }
+            require(config.mintedToday + phUSDAmount <= config.maxMintPerDay, "Daily mint limit exceeded");
+            config.mintedToday += phUSDAmount;
+        }
 
         // Transfer stablecoin from caller to this contract
         IERC20(stablecoin).safeTransferFrom(msg.sender, address(this), amount);
 
         // Deposit to yield strategy, minter is the recipient
         IYieldStrategy(config.yieldStrategy).deposit(stablecoin, amount, address(this));
-
-        // Calculate phUSD amount using decimal normalization formula
-        uint256 phUSDAmount = calculateMintAmount(stablecoin, amount);
 
         // Mint phUSD to caller
         IMintableToken(phUSD).mint(msg.sender, phUSDAmount);

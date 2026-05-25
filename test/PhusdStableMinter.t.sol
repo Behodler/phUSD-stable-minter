@@ -496,45 +496,158 @@ contract PhusdStableMinterTest is Test {
         minter.approveYS(address(usdc), address(yieldStrategy));
     }
 
-    // ========== WITHDRAW TESTS ==========
+    // ========== DAILY MINT CAP TESTS ==========
 
-    function test_withdraw_CallsYieldStrategyWithdrawForFullBalance() public {
-        // Setup: deposit some tokens first
+    function _registerAndApproveUsdc() internal {
         minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
         minter.approveYS(address(usdc), address(yieldStrategy));
-
-        uint256 depositAmount = 1000e6;
-        usdc.approve(address(minter), depositAmount);
-        minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
-
-        // Now withdraw
-        minter.withdraw(address(yieldStrategy), user2);
-
-        uint256 remainingBalance = yieldStrategy.balanceOf(address(usdc), address(minter));
-        assertEq(remainingBalance, 0, "Yield strategy balance not withdrawn");
     }
 
-    function test_withdraw_SendsWithdrawnTokensToSpecifiedRecipient() public {
-        // Setup: deposit some tokens first
-        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
-        minter.approveYS(address(usdc), address(yieldStrategy));
+    function test_setMaxMintPerDay_OnlyCallableByOwner() public {
+        _registerAndApproveUsdc();
 
-        uint256 depositAmount = 1000e6;
-        usdc.approve(address(minter), depositAmount);
-        minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
-
-        // Now withdraw
-        uint256 balanceBefore = usdc.balanceOf(user2);
-        minter.withdraw(address(yieldStrategy), user2);
-        uint256 balanceAfter = usdc.balanceOf(user2);
-
-        assertEq(balanceAfter - balanceBefore, depositAmount, "Tokens not sent to recipient");
-    }
-
-    function test_withdraw_OnlyCallableByOwner() public {
         vm.prank(user1);
         vm.expectRevert();
-        minter.withdraw(address(yieldStrategy), user2);
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+    }
+
+    function test_setMaxMintPerDay_RevertsForUnregisteredStablecoin() public {
+        vm.expectRevert();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+    }
+
+    function test_setMaxMintPerDay_EmitsEvent() public {
+        _registerAndApproveUsdc();
+
+        vm.expectEmit(true, false, false, true);
+        emit MaxMintPerDayUpdated(address(usdc), 1000e18);
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+    }
+
+    function test_setMaxMintPerDay_UpdatesConfig() public {
+        _registerAndApproveUsdc();
+
+        minter.setMaxMintPerDay(address(usdc), 1234e18);
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertEq(config.maxMintPerDay, 1234e18, "maxMintPerDay not updated");
+    }
+
+    function test_mint_UnlimitedWhenMaxMintPerDayZero() public {
+        _registerAndApproveUsdc();
+
+        // Default cap is 0 (no limit). A large mint should succeed.
+        uint256 mintAmount = 500000e6; // 500k USDC -> 500k phUSD
+        uint256 expectedPhUSD = 500000e18;
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), mintAmount);
+        minter.mint(address(usdc), mintAmount);
+        vm.stopPrank();
+
+        assertEq(phUSD.balanceOf(user1), expectedPhUSD, "Mint should be unlimited when cap is 0");
+
+        // mintedToday should remain 0 since the cap path is skipped
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertEq(config.mintedToday, 0, "mintedToday should not accumulate when cap disabled");
+    }
+
+    function test_mint_RevertsWhenSingleMintExceedsCap() public {
+        _registerAndApproveUsdc();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+
+        // 1001 USDC -> 1001 phUSD, exceeds the 1000 phUSD cap
+        uint256 mintAmount = 1001e6;
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), mintAmount);
+        vm.expectRevert(bytes("Daily mint limit exceeded"));
+        minter.mint(address(usdc), mintAmount);
+        vm.stopPrank();
+    }
+
+    function test_mint_RevertsWhenCumulativeMintExceedsCap() public {
+        _registerAndApproveUsdc();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 2000e6);
+
+        // First mint of 600 phUSD succeeds
+        minter.mint(address(usdc), 600e6);
+
+        // Second mint of 500 phUSD would push cumulative to 1100 > 1000 cap
+        vm.expectRevert(bytes("Daily mint limit exceeded"));
+        minter.mint(address(usdc), 500e6);
+        vm.stopPrank();
+    }
+
+    function test_mint_SucceedsUpToExactCapAndAccumulates() public {
+        _registerAndApproveUsdc();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 1000e6);
+
+        // 600 + 400 = 1000 phUSD, exactly the cap
+        minter.mint(address(usdc), 600e6);
+        PhusdStableMinter.StablecoinConfig memory configMid = minter.getStablecoinConfig(address(usdc));
+        assertEq(configMid.mintedToday, 600e18, "mintedToday should accumulate first mint");
+
+        minter.mint(address(usdc), 400e6);
+        vm.stopPrank();
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertEq(config.mintedToday, 1000e18, "mintedToday should equal cap after exact-cap mints");
+        assertEq(phUSD.balanceOf(user1), 1000e18, "phUSD balance should equal cap");
+    }
+
+    function test_mint_WindowResetsAfter24Hours() public {
+        _registerAndApproveUsdc();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 2000e6);
+
+        // Fill the cap in window 1
+        minter.mint(address(usdc), 1000e6);
+
+        // Another mint in the same window must revert
+        vm.expectRevert(bytes("Daily mint limit exceeded"));
+        minter.mint(address(usdc), 1e6);
+        vm.stopPrank();
+
+        // Warp past 24h -> window resets
+        vm.warp(block.timestamp + 1 days);
+
+        vm.startPrank(user1);
+        minter.mint(address(usdc), 1000e6);
+        vm.stopPrank();
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertEq(config.mintedToday, 1000e18, "mintedToday should reset and refill in new window");
+        assertEq(phUSD.balanceOf(user1), 2000e18, "user should have minted twice the cap across windows");
+    }
+
+    function test_mint_ColdStartInitializesWindow() public {
+        _registerAndApproveUsdc();
+        minter.setMaxMintPerDay(address(usdc), 1000e18);
+
+        // Before any capped mint, lastMintTimestamp is 0
+        PhusdStableMinter.StablecoinConfig memory before = minter.getStablecoinConfig(address(usdc));
+        assertEq(before.lastMintTimestamp, 0, "lastMintTimestamp should start at 0");
+
+        // Warp to a non-trivial timestamp so we can verify the window anchors here
+        vm.warp(1_000_000);
+
+        vm.startPrank(user1);
+        usdc.approve(address(minter), 500e6);
+        minter.mint(address(usdc), 500e6);
+        vm.stopPrank();
+
+        PhusdStableMinter.StablecoinConfig memory config = minter.getStablecoinConfig(address(usdc));
+        assertEq(config.lastMintTimestamp, 1_000_000, "window should anchor at first capped mint");
+        assertEq(config.mintedToday, 500e18, "mintedToday should reflect the first capped mint");
     }
 
     // ========== EVENT EMISSION TESTS ==========
@@ -580,19 +693,6 @@ contract PhusdStableMinterTest is Test {
         minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
     }
 
-    function test_withdraw_EmitsWithdrawalExecutedEvent() public {
-        minter.registerStablecoin(address(usdc), address(yieldStrategy), EXCHANGE_RATE_1_TO_1, 6);
-        minter.approveYS(address(usdc), address(yieldStrategy));
-
-        uint256 depositAmount = 1000e6;
-        usdc.approve(address(minter), depositAmount);
-        minter.noMintDeposit(address(yieldStrategy), address(usdc), depositAmount);
-
-        vm.expectEmit(true, true, false, true);
-        emit WithdrawalExecuted(address(yieldStrategy), address(usdc), depositAmount, user2);
-        minter.withdraw(address(yieldStrategy), user2);
-    }
-
     function test_approveYS_EmitsApprovalSetEvent() public {
         vm.expectEmit(true, true, false, false);
         emit ApprovalSet(address(usdc), address(yieldStrategy));
@@ -614,13 +714,8 @@ contract PhusdStableMinterTest is Test {
         uint256 phUSDAmount
     );
     event TokensDeposited(address indexed yieldStrategy, address indexed token, uint256 amount);
-    event WithdrawalExecuted(
-        address indexed yieldStrategy,
-        address indexed token,
-        uint256 amount,
-        address indexed recipient
-    );
     event ApprovalSet(address indexed token, address indexed yieldStrategy);
+    event MaxMintPerDayUpdated(address indexed stablecoin, uint256 newMaxMintPerDay);
 
     // ========== IPAUSABLE TESTS ==========
 
