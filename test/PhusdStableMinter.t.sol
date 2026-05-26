@@ -95,8 +95,8 @@ contract MockYieldStrategy is IYieldStrategy {
 
     function emergencyWithdraw(uint256) external {}
     function totalWithdrawal(address, address) external {}
-    function skimSurplus(address, address, uint256, address) external {}
-    function skimSurplusBatch(address, address[] calldata, address) external {}
+    function skimSurplus(address, address) external {}
+    function getAuthorizedClients() external view returns (address[] memory) {}
 }
 
 contract PhusdStableMinterTest is Test {
